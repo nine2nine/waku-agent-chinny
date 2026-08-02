@@ -4,9 +4,9 @@ The loop speaks one dialect: Anthropic's Messages shape (system/messages/tools
 in, content blocks out). Providers plug in two ways:
 
   anthropic wire format (native)     → Anthropic, Kimi/Moonshot, GLM/Z.ai, MiniMax
-  openai wire format (thin adapter)  → OpenAI, Google Gemini, DeepSeek, OpenRouter
+  openai wire format (thin adapter)  → OpenAI, Google Gemini, DeepSeek, Qwen, OpenRouter
 
-Pick with WAKU_PROVIDER=anthropic|openai|gemini|deepseek|minimax|kimi|glm|openrouter
+Pick with WAKU_PROVIDER=anthropic|openai|gemini|deepseek|minimax|kimi|glm|qwen|openrouter
 and set that provider's API key in .env. Override the model ids with WAKU_MODEL /
 WAKU_SMALL_MODEL if the defaults below age out — they're just strings. This
 matters most for openrouter: it's a single key in front of hundreds of models,
@@ -89,6 +89,13 @@ PROVIDERS: dict[str, Provider] = {
                           flagship="kimi-k3", fast="kimi-k2.7-code-highspeed"),
     "glm":       Provider("anthropic", "ZHIPU_API_KEY", "https://api.z.ai/api/anthropic",
                           "glm-5.2", "glm-5-turbo"),
+    # Qwen, via Alibaba Cloud's DashScope, on its OpenAI-compatible endpoint.
+    # This is the INTERNATIONAL endpoint; mainland-China accounts use
+    # https://dashscope.aliyuncs.com/compatible-mode/v1 instead — override
+    # with WAKU_BASE_URL if that's your account.
+    "qwen":      Provider("openai", "DASHSCOPE_API_KEY",
+                          "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                          "qwen3-max", "qwen-flash"),
     # xAI Grok on its OpenAI-compatible endpoint. The model ids below are
     # starting points — add XAI_API_KEY and the picker lists the live catalog
     # (the authoritative source); pin whatever the current flagship/fast are.
@@ -120,18 +127,48 @@ def get_client(settings: Settings):
     # .strip() so a trailing newline/space from a copy-paste doesn't corrupt the
     # auth header (headers are latin-1; a stray non-ASCII char errors cryptically).
     api_key = (settings.api_key or os.getenv(provider.key_env, "")).strip()
-    if not api_key:
-        raise SystemExit(
+
+    # No explicit key for the "anthropic" PROVIDER (not kimi/glm/minimax — those
+    # are anthropic-WIRE providers with their own endpoints and keys, and a
+    # Claude credential must never silently leak into them): check whether the
+    # SDK's own credential chain can resolve one anyway — ANTHROPIC_AUTH_TOKEN,
+    # or an `ant auth login` profile on disk. default_credentials() is the SDK's
+    # own public helper for that lookup, so we ask it instead of hand-rolling a
+    # path check.
+    has_oauth_credentials = False
+    if not api_key and settings.provider == "anthropic":
+        import anthropic
+        from anthropic.lib.credentials import default_credentials
+
+        try:
+            has_oauth_credentials = default_credentials(
+                base_url=settings.base_url or provider.base_url or "https://api.anthropic.com"
+            ) is not None
+        except anthropic.AnthropicError:
+            # An explicitly-set but broken/missing ANTHROPIC_CONFIG_DIR (a
+            # stale env var, a moved directory) makes the SDK propagate
+            # instead of returning None here. Treat that the same as "no
+            # credentials found" — the SystemExit below is a clearer message
+            # than the SDK's raw config-file error.
+            has_oauth_credentials = False
+
+    if not api_key and not has_oauth_credentials:
+        message = (
             f"No API key for provider '{settings.provider}'. "
             f"Set {provider.key_env} in .env (see .env.example)."
         )
-    try:
-        api_key.encode("latin-1")
-    except UnicodeEncodeError:
-        raise SystemExit(
-            f"{provider.key_env} contains a non-ASCII character (e.g. a smart quote "
-            f"or arrow from a bad paste). Re-paste the key with no spaces or line breaks."
-        )
+        if settings.provider == "anthropic":
+            message += " Or run `ant auth login` (no key needed)."
+        raise SystemExit(message)
+
+    if api_key:
+        try:
+            api_key.encode("latin-1")
+        except UnicodeEncodeError:
+            raise SystemExit(
+                f"{provider.key_env} contains a non-ASCII character (e.g. a smart quote "
+                f"or arrow from a bad paste). Re-paste the key with no spaces or line breaks."
+            )
 
     settings.model = settings.model or provider.model
     settings.small_model = settings.small_model or provider.small_model
@@ -143,9 +180,15 @@ def get_client(settings: Settings):
     if provider.kind == "anthropic":
         import anthropic
 
-        kwargs: dict = {"api_key": api_key, "timeout": timeout}
+        kwargs: dict = {"timeout": timeout}
         if base_url:
             kwargs["base_url"] = base_url
+        if api_key:
+            kwargs["api_key"] = api_key
+        # else: leave api_key out entirely. `ant auth login` stores an OAuth
+        # profile the SDK reads on its own and injects as a Bearer token (plus
+        # the oauth-2025-04-20 beta header) — passing api_key= here, even a
+        # falsy one, would force the x-api-key header and defeat that.
         return anthropic.Anthropic(**kwargs)
     return OpenAICompatClient(api_key=api_key, base_url=base_url, timeout=timeout)
 

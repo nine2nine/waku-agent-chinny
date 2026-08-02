@@ -30,6 +30,7 @@ import json
 PRICING = {
     "anthropic": (3.0, 15.0), "openai": (2.5, 15.0), "gemini": (0.3, 2.5),
     "deepseek": (0.435, 0.87), "minimax": (0.30, 1.20), "kimi": (0.6, 2.5), "glm": (0.6, 2.2),
+    "qwen": (1.2, 6.0),   # DashScope Qwen3-Max — rough est; keyed users get exact from the catalog
     "xai": (3.0, 15.0),   # Grok — rough est; keyed users get exact from the catalog
     "opencode_zen": (0.435, 0.87),   # rough est (matching deepseek — same underlying model)
     "opencode_go": (0.435, 0.87),    # rough est
