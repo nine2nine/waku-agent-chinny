@@ -157,9 +157,10 @@ def graph_stream(payload: dict, emit) -> None:
             "draft_path": state.get("draft_path", ""),
             "errors": state.get("errors") or {},
         })
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         # Includes GraphStateCollision, which run_graph raises OUT (unlike node
-        # errors) — better shown in the card than dropped on the floor.
+        # errors) — better shown in the card than dropped on the floor. Also
+        # catches SystemExit: get_client raises it for a missing/misconfigured key.
         emit("done", {"error": f"{type(exc).__name__}: {exc}"})
 
 
@@ -938,7 +939,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 chat_stream(message, emit)
-            except Exception as exc:  # surface as a terminal event, don't 500
+            except (Exception, SystemExit) as exc:  # get_client raises SystemExit
                 emit("done", {"error": f"{type(exc).__name__}: {exc}"})
             return
         # /api/compare/stream races several models, emitting each result as it lands.
@@ -959,7 +960,7 @@ class Handler(BaseHTTPRequestHandler):
                 compare_stream((payload.get("message") or "").strip(), payload.get("models") or [],
                                emit, judge=bool(payload.get("judge")), coding=bool(payload.get("coding")),
                                judge_spec=(payload.get("judge_model") or ""), apple=bool(payload.get("apple")))
-            except Exception as exc:
+            except (Exception, SystemExit) as exc:  # get_client raises SystemExit
                 emit("done", {"error": f"{type(exc).__name__}: {exc}"})
             return
         if self.path == "/api/graph/stream":
@@ -992,7 +993,9 @@ class Handler(BaseHTTPRequestHandler):
                 out = chat(message) if message else {"error": "empty message"}
             else:
                 out = routes[self.path](payload)
-        except Exception as exc:  # surface, don't 500 — the browser shows it
+        except (Exception, SystemExit) as exc:
+            # surface, don't 500 — the browser shows it. SystemExit included:
+            # get_client raises it for a missing key, and it is NOT an Exception.
             out = {"error": f"{type(exc).__name__}: {exc}"}
         self._send(json.dumps(out, default=str).encode(), "application/json")
 
